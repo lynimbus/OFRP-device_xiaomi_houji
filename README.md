@@ -1,0 +1,1 @@
+# OFRP-device_xiaomi_houji
