@@ -1,0 +1,16 @@
+<!--
+    Input:
+        device/xiaomi/mivendor/manifest_pineapple.xml
+        vendor/xiaomi/proprietary/slm/port/src/manifest.xml
+        vendor/xiaomi/proprietary/miwillp/port/src/manifest.xml
+        vendor/xiaomi/proprietary/minet/port/src/manifest.xml
+-->
+<manifest version="4.0" type="device" target-level="8">
+    <hal format="aidl">
+        <name>android.hardware.gatekeeper</name>
+        <fqname>IGatekeeper/default</fqname>
+    </hal>
+    <sepolicy>
+        <version>34.0</version>
+    </sepolicy>
+</manifest>

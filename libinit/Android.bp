@@ -1,0 +1,20 @@
+//
+// Copyright (C) 2024 The Android Open Source Project
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+
+cc_library_static {
+    name: "libinit_xiaomi_sm8650",
+    header_libs: [
+        "libbase_headers",
+    ],
+    cflags: [
+        "-Wall",
+    ],
+    static_libs: [
+        "libbase",
+    ],
+    srcs: ["libinit_xiaomi_sm8650.cpp"],
+    recovery_available: true,
+}
