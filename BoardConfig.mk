@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2024 The Android Open Source Project
+# Copyright (C) 2026 The Android Open Source Project
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -69,9 +69,6 @@ AB_OTA_PARTITIONS += \
     vendor \
     vendor_dlkm
 
-# Verified Boot
-BOARD_AVB_ENABLE := true
-
 # Partitions
 BOARD_PROPERTY_OVERRIDES_SPLIT_ENABLED := true
 BOARD_RECOVERYIMAGE_PARTITION_SIZE := 104857600
@@ -116,6 +113,7 @@ BOARD_AVB_VBMETA_SYSTEM_ROLLBACK_INDEX_LOCATION := 2
 TARGET_SYSTEM_PROP += $(DEVICE_PATH)/system.prop
 
 # Recovery
+TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery.fstab
 BOARD_HAS_LARGE_FILESYSTEM := true
 TARGET_RECOVERY_PIXEL_FORMAT := RGBX_8888
 
@@ -132,10 +130,6 @@ TARGET_INIT_VENDOR_LIB := //$(DEVICE_PATH):libinit_xiaomi_sm8650
 TARGET_RECOVERY_DEVICE_MODULES := libinit_xiaomi_sm8650
 TARGET_PLATFORM_DEVICE_BASE := /devices/soc/
 
-# OMAPI
-TW_INCLUDE_OMAPI := true
-TW_OMAPI_UUID := 534552454144595f48414c5f55554944
-
 BOARD_USES_METADATA_PARTITION := true
 PLATFORM_VERSION := 99.87.36
 PLATFORM_SECURITY_PATCH := 2099-12-31
@@ -143,16 +137,46 @@ PLATFORM_VERSION_LAST_STABLE := $(PLATFORM_VERSION)
 VENDOR_SECURITY_PATCH   := $(PLATFORM_SECURITY_PATCH)
 BOOT_SECURITY_PATCH     := $(PLATFORM_SECURITY_PATCH)
 
-# Tool
+# -----------------------------------------------------------------------------
+# TWRP Configuration
+# -----------------------------------------------------------------------------
+
+# Display & UI
+TW_THEME := portrait_hdpi
+TW_MAX_BRIGHTNESS := 2047
+TW_DEFAULT_BRIGHTNESS := 1200
+TW_BRIGHTNESS_PATH := "/sys/class/backlight/panel0-backlight/brightness"
+TW_FRAMERATE := 120
+TW_SCREEN_BLANK_ON_BOOT := true
+TW_EXTRA_LANGUAGES := true
+
+# Storage & File Systems
+RECOVERY_SDCARD_ON_DATA := true
+TARGET_USES_MKE2FS := true
+TW_INCLUDE_FUSE_EXFAT := true
+TW_NO_EXFAT_FUSE := true
+TW_INCLUDE_FUSE_NTFS := true
+TW_INCLUDE_NTFS_3G := true
+
+# Input & Haptics
+TW_INPUT_BLACKLIST := "hbtp_vm"
+TW_SUPPORT_INPUT_AIDL_HAPTICS := true
+TW_SUPPORT_INPUT_AIDL_HAPTICS_FQNAME := "IVibrator/vibratorfeature"
+TW_SUPPORT_INPUT_AIDL_HAPTICS_FIX_OFF := true
+
+# Tools & Utilities
+TW_INCLUDE_FASTBOOTD := true
+TW_USE_TOOLBOX := true
+TW_USE_DMCTL := true
 TW_INCLUDE_7ZA := true
-TW_INCLUDE_REPACKTOOLS := true
 TW_INCLUDE_RESETPROP := true
 TW_INCLUDE_LIBRESETPROP := true
+TW_INCLUDE_REPACKTOOLS := true
 TW_INCLUDE_LPDUMP := true
 TW_INCLUDE_LPTOOLS := true
 TW_ENABLE_ALL_PARTITION_TOOLS := true
 
-# Debug
+# Debugging & Logging
 TARGET_USES_LOGD := true
 TWRP_INCLUDE_LOGCAT := true
 TARGET_RECOVERY_DEVICE_MODULES += debuggerd
@@ -160,34 +184,17 @@ RECOVERY_BINARY_SOURCE_FILES += $(TARGET_OUT_EXECUTABLES)/debuggerd
 TARGET_RECOVERY_DEVICE_MODULES += strace
 RECOVERY_BINARY_SOURCE_FILES += $(TARGET_OUT_EXECUTABLES)/strace
 
-# Fastbootd
-TW_INCLUDE_FASTBOOTD := true
-
-# Other TWRP Configurations
-TW_THEME := portrait_hdpi
-TW_FRAMERATE := 120
-RECOVERY_SDCARD_ON_DATA := true
-TARGET_RECOVERY_QCOM_RTC_FIX := true
-TW_EXCLUDE_DEFAULT_USB_INIT := true
-TW_INCLUDE_NTFS_3G := true
-TW_NO_EXFAT_FUSE := true
-TW_USE_DMCTL := true
-TW_USE_TOOLBOX := true
-TARGET_USES_MKE2FS := true
-TW_INCLUDE_FUSE_EXFAT := true
-TW_INCLUDE_FUSE_NTFS := true
-TW_INPUT_BLACKLIST := "hbtp_vm"
-TW_BRIGHTNESS_PATH := "/sys/class/backlight/panel0-backlight/brightness"
-TW_MAX_BRIGHTNESS := 2047
-TW_EXTRA_LANGUAGES := true
-TW_DEFAULT_BRIGHTNESS := 1200
+# Hardware, System & Crypto
 TW_EXCLUDE_APEX := true
+TW_EXCLUDE_DEFAULT_USB_INIT := true
 TW_HAS_EDL_MODE := false
-TW_SUPPORT_INPUT_AIDL_HAPTICS := true
-TW_SUPPORT_INPUT_AIDL_HAPTICS_FQNAME := "IVibrator/vibratorfeature"
-TW_SUPPORT_INPUT_AIDL_HAPTICS_FIX_OFF := true
 TW_USE_SERIALNO_PROPERTY_FOR_DEVICE_ID := true
-TW_SCREEN_BLANK_ON_BOOT := true
+TW_CUSTOM_CPU_TEMP_PATH := "/sys/class/thermal/thermal_zone1/temp"
+TARGET_RECOVERY_QCOM_RTC_FIX := true
+TW_INCLUDE_OMAPI := true
+TW_OMAPI_UUID := 534552454144595f48414c5f55554944
+
+# Modules Load
 TW_LOAD_VENDOR_MODULES := "adsp_loader_dlkm.ko synaptics_tcm2.ko nxp-nci.ko stm_st54se_gpio.ko stm_nfc_i2c.ko"
 TW_LOAD_VENDOR_MODULES_EXCLUDE_GKI := true
-TW_CUSTOM_CPU_TEMP_PATH := "/sys/class/thermal/thermal_zone1/temp" # CPU-0-0-0
+
