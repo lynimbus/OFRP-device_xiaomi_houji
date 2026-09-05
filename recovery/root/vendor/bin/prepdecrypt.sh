@@ -169,7 +169,7 @@ update_default_values() {
 check_dynamic() {
 	dynamic_partitions=$(getprop ro.boot.dynamic_partitions)
 	if [ "$dynamic_partitions" = "true" ]; then
-		if [[ ! -e "/dev/block/mapper/system$suffix" && ! -e "/dev/block/mapper/vendor$suffix" ]]; then
+		if [ ! -e "/dev/block/mapper/system$suffix" ] && [ ! -e "/dev/block/mapper/vendor$suffix" ]; then
 			log_print 1 "/dev/block/mapper/system$suffix and /dev/block/mapper/vendor$suffix not Found! unset suffix"
 			unset suffix
 		fi
