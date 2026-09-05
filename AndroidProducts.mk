@@ -8,6 +8,4 @@ PRODUCT_MAKEFILES := \
     $(LOCAL_DIR)/twrp_houji.mk
 
 COMMON_LUNCH_CHOICES := \
-    twrp_houji-user \
-    twrp_houji-userdebug \
-    twrp_houji-eng
+    twrp_houji-ap2a-eng

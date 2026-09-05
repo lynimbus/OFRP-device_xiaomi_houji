@@ -40,8 +40,9 @@ OF_ENABLE_ALL_PARTITION_TOOLS := 1
 OF_FBE_METADATA_MOUNT_IGNORE      := 1
 OF_SKIP_DECRYPTED_ADOPTED_STORAGE := 1
 
+FIXED_DECRYPT := true
+
 ifeq ($(FIXED_DECRYPT),false)
-	# Set to 1 to skip the FBE decryption routines (prevents hanging at the Fox logo or Redmi/Mi logo)
 	OF_SKIP_FBE_DECRYPTION := 1
 endif
 
@@ -78,5 +79,4 @@ OF_ENABLE_FRP_ADDON               := 1
 # Logging
 # -----------------------------------------------------------------------------
 OF_LOOP_DEVICE_ERRORS_TO_LOG := 1
-OF_DONT_KEEP_LOG_HISTORY     := 0
 
