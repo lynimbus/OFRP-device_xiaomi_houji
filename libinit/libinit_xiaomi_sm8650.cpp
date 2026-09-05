@@ -38,7 +38,6 @@
 #include <sys/_system_properties.h>
 
 using android::base::GetProperty;
-using android::base::SetProperty;
 
 void property_override(const std::string &name, const std::string &value) {
   size_t valuelen = value.size();
@@ -83,10 +82,8 @@ void vendor_load_properties() {
   property_override("ro.build.date.utc", "1672502400");
   const std::string sku = GetProperty("ro.boot.hardware.sku", "");
 
-  if (sku == "houji") {
-    model_property_override("houji", "houji", "Xiaomi 14");
-  } else if (sku == "houjiin") {
-    model_property_override("houjiin", "houjiin", "Xiaomi 14");
+  if (sku == "houji" || sku == "houjiin") {
+    model_property_override(sku, sku, "Xiaomi 14");
   } else {
     LOG(ERROR) << "Unknown sku: " << sku;
   }
