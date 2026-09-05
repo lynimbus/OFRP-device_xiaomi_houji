@@ -1,0 +1,191 @@
+name: Build OrangeFox recovery (houji)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish artifacts as a GitHub release'
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: build-recovery-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DEVICE: houji
+  DEVICE_PATH: device/xiaomi/houji
+  MANIFEST_BRANCH: '14.1'
+  LUNCH_TARGET: twrp_houji-ap2a-eng
+
+jobs:
+  build:
+    name: mka recoveryimage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    permissions:
+      contents: write
+
+    steps:
+      - name: Free disk space and enlarge swap
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          AVAIL=$(df -m --output=avail / | tail -1 | tr -d ' ')
+          RESERVE=$((90 * 1024))
+          SWAP_MB=$(( AVAIL - RESERVE ))
+          if [ "$SWAP_MB" -gt 12288 ]; then SWAP_MB=12288; fi
+          if [ "$SWAP_MB" -ge 4096 ]; then
+            sudo swapoff /swapfile || true
+            sudo rm -f /swapfile
+            sudo fallocate -l "${SWAP_MB}M" /swapfile \
+              || sudo dd if=/dev/zero of=/swapfile bs=1M count="$SWAP_MB" status=none
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile >/dev/null
+            sudo swapon /swapfile
+          else
+            echo "::warning::Only ${AVAIL}M free on /, keeping the stock 3G swap"
+          fi
+
+      - name: Checkout device tree
+        uses: actions/checkout@v7
+        with:
+          path: devicetree
+          fetch-depth: 0
+
+      - name: Install AOSP build dependencies
+        run: |
+          git clone --depth=1 https://gitlab.com/OrangeFox/misc/scripts.git -b master "$RUNNER_TEMP/of-scripts"
+          sudo bash "$RUNNER_TEMP/of-scripts/setup/android_build_env.sh"
+          command -v ccache >/dev/null || sudo apt-get install -y ccache
+
+      - name: Sync OrangeFox sources
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+          git config --global color.ui false
+          mkdir -p "$GITHUB_WORKSPACE/sync"
+          git clone --depth=1 https://gitlab.com/OrangeFox/sync.git -b master "$GITHUB_WORKSPACE/sync"
+          cd "$GITHUB_WORKSPACE/sync"
+          ./orangefox_sync.sh --branch "$MANIFEST_BRANCH" --path "$GITHUB_WORKSPACE/fox_$MANIFEST_BRANCH"
+
+      - name: Place device tree
+        run: |
+          FOX_ROOT="$GITHUB_WORKSPACE/fox_$MANIFEST_BRANCH"
+          test -f "$FOX_ROOT/build/envsetup.sh"
+          rm -rf "${FOX_ROOT:?}/${DEVICE_PATH:?}"
+          mkdir -p "$(dirname "$FOX_ROOT/$DEVICE_PATH")"
+          cp -a "$GITHUB_WORKSPACE/devicetree" "$FOX_ROOT/$DEVICE_PATH"
+          test -f "$FOX_ROOT/$DEVICE_PATH/BoardConfig.mk"
+          echo "COMMIT_ID=$(git -C "$GITHUB_WORKSPACE/devicetree" rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      - name: Drop .repo to free disk
+        run: |
+          FOX_ROOT="$GITHUB_WORKSPACE/fox_$MANIFEST_BRANCH"
+          rm -rf "${FOX_ROOT:?}/.repo"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache
+          key: ccache-${{ env.DEVICE }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ env.DEVICE }}-
+
+      - name: Build recovery image
+        run: |
+          FOX_ROOT="$GITHUB_WORKSPACE/fox_$MANIFEST_BRANCH"
+          cd "$FOX_ROOT"
+          export LC_ALL=C
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export FOX_BUILD_DEVICE="$DEVICE"
+          export USE_CCACHE=1
+          CCACHE_EXEC=$(command -v ccache)
+          export CCACHE_EXEC
+          export CCACHE_DIR=/home/runner/.ccache
+          export CCACHE_MAXSIZE=6G
+          set +e
+          source build/envsetup.sh
+          set -e
+          lunch "$LUNCH_TARGET"
+          CG=/sys/fs/cgroup/aospbuild
+          if sudo mkdir -p "$CG" 2>/dev/null; then
+            grep -q memory /sys/fs/cgroup/cgroup.subtree_control \
+              || echo +memory | sudo tee /sys/fs/cgroup/cgroup.subtree_control >/dev/null 2>&1 || true
+          fi
+          if [ -e "$CG/memory.max" ]; then
+            echo 13G | sudo tee "$CG/memory.max" >/dev/null
+            echo 11G | sudo tee "$CG/memory.high" >/dev/null
+            echo 12G | sudo tee "$CG/memory.swap.max" >/dev/null
+            echo $$ | sudo tee "$CG/cgroup.procs" >/dev/null
+          else
+            echo "::warning::memory cgroup unavailable, building without a memory fence"
+          fi
+          set -o pipefail
+          mka recoveryimage 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Collect artifacts
+        run: |
+          OUT="$GITHUB_WORKSPACE/fox_$MANIFEST_BRANCH/out/target/product/$DEVICE"
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          shopt -s nullglob
+          found=("$OUT"/OrangeFox-*.img "$OUT"/OrangeFox-*.zip "$OUT"/OrangeFox-*.md5)
+          if [ ${#found[@]} -eq 0 ]; then
+            echo "No OrangeFox artifacts found, contents of $OUT:"
+            ls -l "$OUT" || true
+            exit 1
+          fi
+          cp -p "${found[@]}" "$GITHUB_WORKSPACE/artifacts/"
+          cd "$GITHUB_WORKSPACE/artifacts"
+          sums=(*.md5)
+          if [ ${#sums[@]} -gt 0 ]; then
+            for m in "${sums[@]}"; do
+              printf '%s  %s\n' "$(awk '{print $1; exit}' "$m")" "${m%.md5}" > "$m"
+            done
+            md5sum -c "${sums[@]}"
+          fi
+          ls -l "$GITHUB_WORKSPACE/artifacts"
+
+      - name: Upload recovery artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: OrangeFox-${{ env.DEVICE }}-${{ env.COMMIT_ID }}
+          path: artifacts/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Compress build log
+        if: always()
+        run: gzip -9 "$GITHUB_WORKSPACE/build.log" || true
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-log-${{ github.run_id }}
+          path: build.log.gz
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish release
+        if: inputs.publish_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="ofrp-${DEVICE}-$(date -u +%Y%m%d)-${COMMIT_ID}"
+          {
+            echo "Manifest: fox_${MANIFEST_BRANCH}"
+            echo "lunch: ${LUNCH_TARGET}"
+            echo "Device tree: ${GITHUB_REPOSITORY}@${COMMIT_ID}"
+            echo
+            echo "Flashable only on devices with an unlocked bootloader."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "OrangeFox for Xiaomi 14 ($DEVICE) - ${COMMIT_ID}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            "$GITHUB_WORKSPACE"/artifacts/*
