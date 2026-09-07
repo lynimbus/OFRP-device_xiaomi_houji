@@ -26,6 +26,7 @@ OF_OPTIONS_LIST_NUM     := 8
 # A/B + dedicated recovery partition
 # -----------------------------------------------------------------------------
 OF_AB_DEVICE_WITH_RECOVERY_PARTITION := 1
+OF_RECOVERY_AB_FULL_REFLASH_RAMDISK  := 1
 
 # -----------------------------------------------------------------------------
 # Dynamic partitions / partition tooling
