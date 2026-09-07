@@ -81,6 +81,46 @@ jobs:
           test -f "$FOX_ROOT/$DEVICE_PATH/BoardConfig.mk"
           echo "COMMIT_ID=$(git -C "$GITHUB_WORKSPACE/devicetree" rev-parse --short HEAD)" >> "$GITHUB_ENV"
 
+      - name: Apply recovery source patches
+        run: |
+          FOX_ROOT="$GITHUB_WORKSPACE/fox_$MANIFEST_BRANCH"
+          PATCH_ROOT="$FOX_ROOT/$DEVICE_PATH/patches"
+          if [ ! -d "$PATCH_ROOT" ]; then
+            echo "No patches directory, nothing to apply"
+            exit 0
+          fi
+          # <patches>/<target_with_underscores>/*.patch -> applied in <FOX_ROOT>/<target/with/slashes>
+          for dir in "$PATCH_ROOT"/*/; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            target="$FOX_ROOT/${name//_//}"
+            if [ ! -d "$target" ]; then
+              echo "::error::Patch target $target does not exist"
+              exit 1
+            fi
+            shopt -s nullglob
+            patches=("$dir"*.patch)
+            shopt -u nullglob
+            if [ ${#patches[@]} -eq 0 ]; then
+              echo "No patches in $dir"
+              continue
+            fi
+            for p in "${patches[@]}"; do
+              echo "== $(basename "$p") -> ${name//_//}"
+              if out=$(patch -p1 -d "$target" --dry-run --forward < "$p" 2>&1); then
+                patch -p1 -d "$target" --forward --no-backup-if-mismatch < "$p"
+              elif printf '%s' "$out" | grep -q 'previously applied'; then
+                echo "::error::Patch $(basename "$p") is already applied in a freshly synced tree - upstream has changed, review it"
+                printf '%s\n' "$out"
+                exit 1
+              else
+                echo "::error::Patch $(basename "$p") does not apply cleanly to ${name//_//}"
+                printf '%s\n' "$out"
+                exit 1
+              fi
+            done
+          done
+
       - name: Drop .repo to free disk
         run: |
           FOX_ROOT="$GITHUB_WORKSPACE/fox_$MANIFEST_BRANCH"

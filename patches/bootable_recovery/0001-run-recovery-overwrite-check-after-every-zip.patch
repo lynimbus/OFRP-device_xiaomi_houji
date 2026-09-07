@@ -1,0 +1,296 @@
+From: houji device tree
+Subject: [PATCH] orangefox: check for recovery overwrite after every zip
+
+The auto-reflash ("Reflash OrangeFox after flashing a ROM") only runs when
+Fox_Zip_Installer_Code != 0, i.e. only when the zip was classified as a ROM.
+That classification happens in exactly one place -- zip_is_rom_package is
+set at orangefox.cpp:670, inside `if (zip_EntryExists(Zip, UPDATER_SCRIPT))`.
+
+A zip carrying only META-INF/com/google/android/update-binary (a hand-written
+shell installer, no updater-script and no payload.bin) is therefore never a
+ROM, Fox_Post_Zip_Install() is never even called for it, and the checkbox has
+no effect -- while such an installer is perfectly capable of dd'ing stock
+recovery over both recovery slots. That is exactly what the houji HyperOS
+fastboot-images repacks do.
+
+Widening ROM detection is the wrong fix: Magisk, KernelSU and most addon zips
+also ship update-binary without updater-script, and marking them as ROMs
+would drag them through Deactivation_Process() and Patch_AVB20(), which patch
+the boot image. That would be far worse than the bug.
+
+Instead, move only the recovery-overwrite check out of the ROM guard, into a
+helper that both the ROM and the non-ROM path call. All the ROM-specific work
+(deactivation, AVB patching, MIUI props, the after-ROM scripts) stays inside
+the original `Fox_Zip_Installer_Code != 0` block and is untouched.
+
+The GUI install path needs the same treatment: action.cpp gates the
+Fox_Post_Zip_Install() call itself on Fox_Zip_Installer_Code != 0, so the
+function would otherwise never be entered for a non-ROM zip. The ORS and adb
+sideload paths already call it unconditionally.
+
+Making the check run for every zip means paying for it on every zip, and on
+this device it is not cheap. OF_AB_DEVICE_WITH_RECOVERY_PARTITION makes the
+target /recovery, which is slotselect, and BOARD_RECOVERYIMAGE_PARTITION_SIZE
+is 100 MiB, so one IsRecoveryOverwritten() call sha256s 200 MiB via two
+shelled-out sha256sum invocations. Baseline plus check is 400 MiB per zip; a
+queue of five addon zips would read 2 GiB to conclude nothing happened.
+
+So the check is made cheap first:
+
+  - The baseline at orangefox.cpp:648 is now gated on TW_AUTO_REFLASHTWRP_VAR.
+    It was only inside `#ifdef AB_OTA_UPDATER`, so users who turn auto-reflash
+    off were paying 200 MiB per zip for a result nothing ever read.
+
+  - IsRecoveryOverwritten() gets an O(1) pre-filter. The kernel's per-partition
+    sectors-written counter (field 7 of /sys/class/block/<dev>/stat) is
+    recorded alongside the checksums; if neither slot's counter has moved since
+    the last hash, nothing wrote to recovery and the hash is skipped entirely.
+    This is only a filter, never a verdict: a counter that did move still falls
+    through to the full sha256 compare, so a zip that writes identical bytes
+    back is still correctly reported as "not overwritten". If the counters
+    cannot be read (no sysfs, unresolvable device, short stat line) the code
+    hashes unconditionally, exactly as before.
+
+    Net effect: one 200 MiB hash for the whole session instead of 400 MiB per
+    zip, with identical results.
+
+Also fixed while here:
+
+  - Ordering. Doing the reflash after the ROM block's tail meant it ran after
+    post_rom_flash_completion.sh and after the
+    OF_BLOCK_OPERATIONS_AFTER_ROM_FLASH warning, so on a ROM install the user
+    would be told "You must now reboot OrangeFox - immediately!" before
+    recovery had actually been restored. The helper is called before that
+    messaging on the ROM path.
+
+  - The reflash path does not need its own Update_System_Details():
+    Repack_Image_And_Flash() already calls it during the slot switch, and
+    action.cpp calls it again after the zip loop.
+
+  - The restore notice goes through gui_msg() like the surrounding code, rather
+    than a bare gui_print(), so it is translatable. Its string is added to
+    gui/theme/common/languages/en.xml, which LoadPackage() always loads as the
+    base language before overlaying the selected one, so the id resolves in
+    every locale and the "String resource not found" fallback warning is gone.
+
+diff --git a/gui/action.cpp b/gui/action.cpp
+index 293dd16..ee292a0 100755
+--- a/gui/action.cpp
++++ b/gui/action.cpp
+@@ -1521,11 +1521,11 @@ int GUIAction::flash(std::string arg)
+ 	  break;
+ 	}
+ 
+-      // success - but what have we just installed?
+-      if (Fox_Zip_Installer_Code != 0) // we have just installed a ROM - ideally, the user should reboot the recovery
+-       {
+-          Fox_Post_Zip_Install(INSTALL_SUCCESS);
+-       }
++      // Success. Always call this: it decides internally what applies.
++      // ROM-specific work stays gated on Fox_Zip_Installer_Code != 0, but the
++      // recovery-overwrite check must run for any zip, including non-ROM
++      // installers that overwrite the recovery partition(s).
++      Fox_Post_Zip_Install(INSTALL_SUCCESS);
+ 
+        usleep(250000);
+      } // for i
+diff --git a/gui/theme/common/languages/en.xml b/gui/theme/common/languages/en.xml
+index 7c64c5a..9b7c010 100644
+--- a/gui/theme/common/languages/en.xml
++++ b/gui/theme/common/languages/en.xml
+@@ -799,6 +799,7 @@
+ 		<string name="fox_install_detecting">Detecting Current Package</string>
+ 		<string name="fox_install_standard_detected">- Detected Standard Package</string>
+ 		<string name="fox_install_miui_detected">- Detected MIUI Update Package</string>
++		<string name="fox_recovery_overwritten">- The recovery partition was overwritten; restoring OrangeFox...</string>
+ 		<string name="fox_zip_have_bootloader">Warning: Detected reinstallation of the bootloader which was called by '{1}'.</string>
+ 		<string name="fox_no_space_ota_survival">Not enough free space on internal storage for creating the OTA survival.</string>
+ 		<string name="fox_incremental_ota_res">OTA_RES -- done!</string>
+diff --git a/orangefox.cpp b/orangefox.cpp
+index f3f0669..88d6979 100644
+--- a/orangefox.cpp
++++ b/orangefox.cpp
+@@ -645,7 +645,8 @@ int Fox_Prepare_Update_Binary(const char *path, ZipArchiveHandle Zip)
+   TWFunc::Fox_Property_Set("found_fox_overwriting_rom", "");
+   DataManager::SetValue("found_non_standard_vAB_install", "0");
+ #ifdef AB_OTA_UPDATER
+-  TWFunc::IsRecoveryOverwritten(true);
++  if (DataManager::GetIntValue(TW_AUTO_REFLASHTWRP_VAR)) // no point in taking a baseline nothing will read
++	TWFunc::IsRecoveryOverwritten(true);
+ #endif
+ 
+   if (TWFunc::Block_Operations_Until_Reboot())
+@@ -1071,6 +1072,25 @@ int Fox_Prepare_Update_Binary(const char *path, ZipArchiveHandle Zip)
+     return INSTALL_SUCCESS;
+ }
+ 
++// Restore OrangeFox if the just-installed zip overwrote the recovery partition(s).
++// Runs for every successfully installed zip, not just ROMs: a non-ROM installer can
++// overwrite recovery just as easily. Self-gating -- the baseline is taken before every
++// zip, and IsRecoveryOverwritten() returns false unless the slots really changed.
++static void Fox_Restore_Overwritten_Recovery()
++{
++#ifdef AB_OTA_UPDATER
++   if (!DataManager::GetIntValue(TW_AUTO_REFLASHTWRP_VAR))
++	return;
++
++   if (TWFunc::IsRecoveryOverwritten()) {
++	gui_msg("fox_recovery_overwritten=- The recovery partition was overwritten; restoring OrangeFox...");
++	twrpRepacker repacker;
++	repacker.Flash_Current_Twrp(); // calls Update_System_Details() itself
++	TWFunc::IsRecoveryOverwritten(true);
++   }
++#endif
++}
++
+ void Fox_Post_Zip_Install(const int result)
+ {
+    if (result != INSTALL_SUCCESS)
+@@ -1112,13 +1132,7 @@ void Fox_Post_Zip_Install(const int result)
+ 	}
+ 	#endif
+ 	//---- Virtual A/B compensations ---- //
+-#ifdef AB_OTA_UPDATER
+-	if (DataManager::GetIntValue(TW_AUTO_REFLASHTWRP_VAR) && TWFunc::IsRecoveryOverwritten()) {
+-		twrpRepacker repacker;
+-		repacker.Flash_Current_Twrp();
+-		TWFunc::IsRecoveryOverwritten(true);
+-	}
+-#endif
++	Fox_Restore_Overwritten_Recovery();
+          PartitionManager.Update_System_Details();
+ 	// Run any custom script after completion of all ROM flashing processes
+ 	TWFunc::RunFoxScript("/system/bin/post_rom_flash_completion.sh", "");
+@@ -1128,6 +1142,10 @@ void Fox_Post_Zip_Install(const int result)
+ 	gui_print_color("warning", "\n\nYou must now reboot OrangeFox - immediately!\n\nDo NOT attempt anything else, without first rebooting OrangeFox.\n");
+ #endif
+      }
++   else
++     {
++	Fox_Restore_Overwritten_Recovery();
++     }
+ }
+ 
+ bool Fox_Skip_Treble_Compatibility_Check()
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index 13411bb..78756d6 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -4980,6 +4980,60 @@ std::pair<string, string> TWPartitionManager::Get_Partition_Checksums(TWPartitio
+ 	return res;
+ }
+ 
++static string Get_Block_Device_Sectors_Written(const string& block_device) {
++	if (block_device.empty())
++		return "";
++
++	char* resolved = realpath(block_device.c_str(), NULL);
++	if (!resolved)
++		return "";
++
++	string device_name(resolved);
++	free(resolved);
++
++	size_t slash = device_name.find_last_of('/');
++	if (slash != string::npos)
++		device_name = device_name.substr(slash + 1);
++	if (device_name.empty())
++		return "";
++
++	string stat_path = "/sys/class/block/" + device_name + "/stat";
++	string contents;
++	if (!android::base::ReadFileToString(stat_path, &contents))
++		return "";
++
++	// field 7 (1-based) of the blockdev stat line is the number of sectors written
++	std::vector<string> fields = android::base::Split(android::base::Trim(contents), " \t");
++	int seen = 0;
++	for (size_t i = 0; i < fields.size(); i++) {
++		if (fields.at(i).empty())
++			continue;
++		if (++seen == 7)
++			return fields.at(i);
++	}
++
++	return "";
++}
++
++std::pair<string, string> TWPartitionManager::Get_Partition_Write_Counters(TWPartition* twrpPart) {
++	std::pair<string, string> res;
++	if (!twrpPart)
++		return res;
++
++	if (twrpPart->Is_SlotSelect()) {
++		res.first = Get_Block_Device_Sectors_Written(twrpPart->Primary_Block_Device + "_a");
++		res.second = Get_Block_Device_Sectors_Written(twrpPart->Primary_Block_Device + "_b");
++		if (res.first.empty() || res.second.empty()) {
++			res.first.clear();
++			res.second.clear();
++		}
++	} else {
++		res.first = Get_Block_Device_Sectors_Written(twrpPart->Primary_Block_Device);
++	}
++
++	return res;
++}
++
+ bool TWPartitionManager::Mount_Super_Toggle(const string& arg, bool user_toggle) {
+ 	bool found_rw = false; // if arg == 0, check if at least one partition can be mounted in r/w mode
+ 	std::vector<TWPartition*>::iterator iter;
+diff --git a/partitions.hpp b/partitions.hpp
+index ea1f80b..60ccdcb 100644
+--- a/partitions.hpp
++++ b/partitions.hpp
+@@ -447,6 +447,7 @@ public:
+ 	bool Disable_AVB2(bool Display_Info);                                     // Disable AVB2.0 in vbmeta/vbmeta_system
+ 	void Check_UsbOtg_Status();						  // Checks if usb_otg is connected
+ 	std::pair<string, string> Get_Partition_Checksums(TWPartition* twrpPart); // Generates and returns the SHA-256 checksum for the specified partition
++	std::pair<string, string> Get_Partition_Write_Counters(TWPartition* twrpPart); // Returns the kernel sectors-written counters for the specified partition
+ 	bool Mount_Super_Toggle(const string& arg, bool user_toggle = false);	  // Changes Mount_Read_Only flag for all dynamic partitions
+ 
+ #ifdef TW_HAS_MTP
+diff --git a/twrp-functions.cpp b/twrp-functions.cpp
+index 24b7ec0..8755f4a 100755
+--- a/twrp-functions.cpp
++++ b/twrp-functions.cpp
+@@ -5133,6 +5133,7 @@ void TWFunc::FoxThemeCheck()
+ 
+ bool TWFunc::IsRecoveryOverwritten(bool only_update) {
+ 	static std::pair<string, string> previous_checksums;
++	static std::pair<string, string> previous_counters;
+ 	TWPartition* target_partition = PartitionManager.Find_Partition_By_Path("/boot");
+ #if defined(FOX_VENDOR_BOOT_RECOVERY) || defined(BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)
+ 	target_partition = PartitionManager.Find_Partition_By_Path("/vendor_boot");
+@@ -5143,6 +5144,18 @@ bool TWFunc::IsRecoveryOverwritten(bool only_update) {
+ 	if (!target_partition)
+ 		return false;
+ 
++	// Cheap pre-filter: if the kernel says nothing has been written to the partition
++	// since the last time we hashed it, the stored checksums are still valid and the
++	// (expensive) hashing can be skipped. Only ever used to skip work, never to
++	// declare the recovery overwritten -- a counter that moved still gets hashed.
++	std::pair<string, string> current_counters = PartitionManager.Get_Partition_Write_Counters(target_partition);
++	bool counters_usable = !current_counters.first.empty() && !previous_counters.first.empty();
++	if (counters_usable && previous_counters == current_counters && !previous_checksums.first.empty()) {
++		if (!only_update)
++			LOGINFO("%s: No writes to %s since the last check\n", __func__, target_partition->Get_Mount_Point().c_str());
++		return false;
++	}
++
+ 	std::pair<string, string> current_checksums = PartitionManager.Get_Partition_Checksums(target_partition);
+ 	if (current_checksums.first.empty()) {
+ 		LOGINFO("%s: Cannot get checksums\n", __func__);
+@@ -5151,11 +5164,13 @@ bool TWFunc::IsRecoveryOverwritten(bool only_update) {
+ 
+ 	if (only_update) {
+ 		previous_checksums = current_checksums;
++		previous_counters = current_counters;
+ 		return false;
+ 	}
+ 
+ 	if (previous_checksums.first.empty() || previous_checksums == current_checksums) {
+ 		previous_checksums = current_checksums;
++		previous_counters = current_counters;
+ 		LOGINFO("%s: The checksums match for %s\n", __func__, target_partition->Get_Mount_Point().c_str());
+ 		return false;
+ 	}
