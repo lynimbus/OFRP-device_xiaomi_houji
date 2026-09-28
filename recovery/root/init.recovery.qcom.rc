@@ -66,6 +66,12 @@ on property:twrp.modules.loaded=true
     wait /sys/kernel/boot_adsp/ssr
     write /sys/kernel/boot_adsp/ssr 1
     wait /sys/class/power_supply/battery
+    # Start the THP userspace touch pipeline ONLY after TW_LOAD_VENDOR_MODULES has
+    # loaded synaptics_tcm2.ko and the panel has registered (panel_register_mask).
+    # Starting it earlier (the old `on init` trigger in
+    # vendor.xiaomi.hw.touchfeature-service.rc) made touch_report hit
+    # "panel in touch id 0 hasn't register" and exit with status 6 -> ghost touch.
+    start touch_report
     start vendor.qseecomd
     start vendor.health-default
     umount /firmware
